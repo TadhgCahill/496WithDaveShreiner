@@ -121,10 +121,10 @@ void sceneBuilderClass::setInstanceTransforms(const vector<glm::mat4>& mats) {
     glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(GLuint), &zero, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 3, ssboCounter_); // binding=3
 
-    // Also forward the *full* instance list to your models initially (render path will compact per frame)
-    for (auto& obj : objects_) {
-        obj->setInstanceTransforms(allInstances_);
+  for (auto& obj : objects_) {
+        obj->initIndirect(maxInstances_);
     }
+
 }
 
 void sceneBuilderClass::bindCameraPointers() {
@@ -143,8 +143,8 @@ void sceneBuilderClass::run() {
     glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
 
     // Ensure base bindings are set
-    if (uboFrustum_) glBindBufferBase(GL_UNIFORM_BUFFER,        4, uboFrustum_);
-    if (uboAabb_)    glBindBufferBase(GL_UNIFORM_BUFFER,        5, uboAabb_);
+    if (uboFrustum_)   glBindBufferBase(GL_UNIFORM_BUFFER,        4, uboFrustum_);
+    if (uboAabb_)      glBindBufferBase(GL_UNIFORM_BUFFER,        5, uboAabb_);
     if (ssboMatrices_) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboMatrices_);
     if (ssboVisible_)  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVisible_);
     if (ssboCounter_)  glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 3, ssboCounter_);
@@ -156,8 +156,8 @@ void sceneBuilderClass::run() {
     GLuint cachedGroups = groupsPerDispatch();
 
     // Debug toggles
-    bool disableCulling = false;           // press 'C' to toggle
-    double startTime = glfwGetTime();
+    bool   disableCulling = false;           // press 'C' to toggle
+    double startTime      = glfwGetTime();
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -181,7 +181,7 @@ void sceneBuilderClass::run() {
                                glm::vec3(0.0f, 1.0f, 0.0f));
         }
 
-        bindCameraPointers();// dont need anywhere else
+        bindCameraPointers(); // dont need anywhere else
 
         int w, h; glfwGetFramebufferSize(window, &w, &h);
         glViewport(0, 0, w, h);
@@ -195,9 +195,12 @@ void sceneBuilderClass::run() {
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(planes), planes);
         }
 
-        std::vector<glm::mat4> matsToDraw;
+        // Default: draw all instances
+        GLuint visCount = static_cast<GLuint>(maxInstances_);
 
         if (!disableCulling && cullProgram_ && maxInstances_ > 0 && cachedGroups > 0) {
+            // --- GPU CULLING PATH ---
+
             // Reset counter
             if (ssboCounter_) {
                 GLuint zero = 0;
@@ -209,8 +212,8 @@ void sceneBuilderClass::run() {
             // Bind bases (harmless if already bound)
             if (ssboMatrices_) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboMatrices_);
             if (ssboVisible_)  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVisible_);
-            if (uboFrustum_)   glBindBufferBase(GL_UNIFORM_BUFFER, 4, uboFrustum_);
-            if (uboAabb_)      glBindBufferBase(GL_UNIFORM_BUFFER, 5, uboAabb_);
+            if (uboFrustum_)   glBindBufferBase(GL_UNIFORM_BUFFER,        4, uboFrustum_);
+            if (uboAabb_)      glBindBufferBase(GL_UNIFORM_BUFFER,        5, uboAabb_);
 
             glUseProgram(cullProgram_);
             glDispatchCompute(cachedGroups, 1, 1);
@@ -221,7 +224,7 @@ void sceneBuilderClass::run() {
                             GL_BUFFER_UPDATE_BARRIER_BIT);
 
             // Read visible count
-            GLuint visCount = 0;
+            visCount = 0;
             if (ssboCounter_) {
                 glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ssboCounter_);
                 glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(GLuint), &visCount);
@@ -236,25 +239,30 @@ void sceneBuilderClass::run() {
                           << " culling=" << (!disableCulling) << "\n";
                 checkGLErrOnce("after compute");
             }
-
         } else {
-            // Culling disabled or compute unavailable → draw everything
-            matsToDraw = allInstances_;
+            // --- NO CULLING PATH → draw everything ---
             if (glfwGetTime() - startTime < 4.0) {
                 std::cerr << "[dbg] culling disabled or cullProgram==0, drawing all instances ("
-                          << matsToDraw.size() << ")\n";
+                          << maxInstances_ << ")\n";
             }
         }
 
-        // Draw objects
+        // Clamp to valid range just in case
+        if (visCount > static_cast<GLuint>(maxInstances_)) {
+            visCount = static_cast<GLuint>(maxInstances_);
+        }
+
+        // Indirect draw for each object
         for (auto& obj : objects_) {
-            obj->setInstanceTransforms(matsToDraw); // uploads per-instance buffer
+            obj->setVisibleCount(visCount);
             obj->render();
         }
 
         glfwSwapBuffers(window);
     }
 }
+
+
 
 void sceneBuilderClass::buildCullProgram_() {
     // One thread per instance. Using AABB culling derived from object-space AABB.
@@ -274,6 +282,7 @@ layout(std140, binding = 4) uniform Frustum {
     vec4 planes[6]; // n.xyz, d
 };
 
+// Object-space AABB for the STL mesh used by all instances
 // Object-space AABB for the STL mesh used by all instances
 layout(std140, binding = 5) uniform AABB {
     vec4 aabbMinOS; // xyz + 0

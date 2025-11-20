@@ -27,7 +27,6 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
     const std::size_t numInstances = static_cast<std::size_t>(numInstancesLL);
-    const string layout = (argc >= 4) ? string(argv[3]) : string("grid");
 
     sceneBuilderClass scene;
 
@@ -38,14 +37,18 @@ int main(int argc, char** argv) {
     //see if needed
     scene.setModelBounds(glm::vec3(-0.5f), glm::vec3(0.5f)); // fallback; replace with real bounds if available
 
+    std::string layout = "grid";   // Make sure this string matches your logic
+    float spacing = 100.0f;         // Big spacing to visually confirm culling
+
     vector<glm::mat4> mats = scene.makeInstanceTransforms(
         numInstances,
         layout,
-        /*spacing*/ 2.5f,
-        /*radius*/  25.0f,
-        /*boxMin*/  glm::vec3(-20.0f),
-        /*boxMax*/  glm::vec3( 20.0f)
+        spacing,
+        25.0f,
+        glm::vec3(-20.0f),
+        glm::vec3( 20.0f)
     );
+
 
     // Upload instances to the scene (compute shader will cull them each frame)
     scene.setInstanceTransforms(mats);

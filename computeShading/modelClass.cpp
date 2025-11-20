@@ -31,10 +31,18 @@ static void checkLink(GLuint prog) {
 }
 
 //basic vertex
-const char* ModelObject::kDefaultVS = R"(#version 330 core
+const char* ModelObject::kDefaultVS = R"(#version 430 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
-layout (location = 2) in mat4 iModel;
+
+// Per-instance data comes from SSBOs, not vertex attributes
+layout(std430, binding = 0) readonly buffer Matrices {
+    mat4 worldMats[];
+};
+
+layout(std430, binding = 2) readonly buffer Visible {
+    uint visibleIndices[];
+};
 
 out vec3 vNormal;
 
@@ -42,13 +50,18 @@ uniform mat4 view;
 uniform mat4 projection;
 
 void main() {
-    vNormal = mat3(transpose(inverse(iModel))) * aNormal;
+    uint inst     = uint(gl_InstanceID);
+    uint matIndex = visibleIndices[inst];   // index into worldMats
+    mat4 iModel   = worldMats[matIndex];
+
+    vNormal    = mat3(transpose(inverse(iModel))) * aNormal;
     gl_Position = projection * view * iModel * vec4(aPos, 1.0);
 }
 )";
 
-//basiuc frag with shading
-const char* ModelObject::kDefaultFS = R"(#version 330 core
+
+//basic frag with shading
+const char* ModelObject::kDefaultFS = R"(#version 430 core
 in vec3 vNormal;
 out vec4 FragColor;
 void main() {
@@ -57,6 +70,7 @@ void main() {
     FragColor = vec4(vec3(k), 1.0);
 }
 )";
+
 
 //works or frag and vertex
 GLuint ModelObject::compile(GLenum type, const char* src) {
@@ -188,19 +202,58 @@ void ModelObject::setInstanceTransforms(const vector<glm::mat4>& transforms) {
     setupInstanceBuffer();
 }
 
-
 void ModelObject::render() {
-    if (!program_ || !vao_ || !view_ || !proj_ || instanceCount_ <= 0) return;
+    // We now rely on the indirect command buffer, not instanceCount_
+    if (!program_ || !vao_ || !view_ || !proj_ || indirectBuffer_ == 0) return;
 
     glUseProgram(program_);
     glUniformMatrix4fv(uView_, 1, GL_FALSE, glm::value_ptr(*view_));
     glUniformMatrix4fv(uProj_, 1, GL_FALSE, glm::value_ptr(*proj_));
 
     glBindVertexArray(vao_);
-    glDrawElementsInstanced(GL_TRIANGLES,
-                            static_cast<GLsizei>(indices_.size()),
-                            GL_UNSIGNED_INT,
-                            reinterpret_cast<void*>(0),
-                            instanceCount_);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer_);
+    glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
+}
+
+void ModelObject::setVisibleCount(GLuint visibleCount) {
+    if (indirectBuffer_ == 0) {
+        return; // initIndirect not called yet
+    }
+
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer_);
+
+    // Only update the instanceCount field inside the command
+    glBufferSubData(GL_DRAW_INDIRECT_BUFFER,
+                    offsetof(DrawElementsIndirectCommand, instanceCount),
+                    sizeof(GLuint),
+                    &visibleCount);
+
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+}
+
+void ModelObject::initIndirect(GLsizei maxInstances) {
+    // Create the indirect draw buffer if it doesn't exist yet
+    if (indirectBuffer_ == 0) {
+        glGenBuffers(1, &indirectBuffer_);
+    }
+
+    // Set up the initial draw command.
+    // We draw all indices in the mesh, but with instanceCount = 0
+    // until culling tells us how many instances are visible.
+    DrawElementsIndirectCommand cmd{};
+    cmd.count         = static_cast<GLuint>(indices_.size());  // indices per instance
+    cmd.instanceCount = 0;                                     // will be set via setVisibleCount()
+    cmd.firstIndex    = 0;                                     // EBO starts at 0
+    cmd.baseVertex    = 0;                                     // VBO starts at 0
+    cmd.baseInstance  = 0;                                     // first instance ID
+
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirectBuffer_);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER,
+                 sizeof(DrawElementsIndirectCommand),
+                 &cmd,
+                 GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+
+    (void)maxInstances; // currently unused, avoids a warning
 }

@@ -34,6 +34,8 @@ public:
     float     maxExtent() const { glm::vec3 s = bboxSize(); return max(s.x, max(s.y, s.z)); }
 
     void render();
+    void initIndirect(GLsizei maxInstances);
+    void setVisibleCount(GLuint visibleCount); // helper for run()
 
 private:
     // shader utils
@@ -71,4 +73,14 @@ private:
     // defaults
     static const char* kDefaultVS;
     static const char* kDefaultFS;
+
+    //for indirect
+    struct DrawElementsIndirectCommand {
+        GLuint count;          // number of indices per instance  (indices_.size())
+        GLuint instanceCount;  // how many instances to draw      (visCount)
+        GLuint firstIndex;     // 0
+        GLuint baseVertex;     // 0
+        GLuint baseInstance;   // 0
+    };
+    GLuint indirectBuffer_ = 0;
 };
